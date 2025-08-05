@@ -2,6 +2,7 @@ package com.maybank.maybank_assessment.batch;
 
 import com.maybank.maybank_assessment.batch.listener.TransactionSkipListener;
 import com.maybank.maybank_assessment.model.entity.Transaction;
+import com.maybank.maybank_assessment.repository.TransactionRepository;
 import jakarta.persistence.EntityManagerFactory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.core.Job;
@@ -20,6 +21,7 @@ import org.springframework.batch.item.file.mapping.DefaultLineMapper;
 import org.springframework.batch.item.file.mapping.FieldSetMapper;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.batch.item.file.transform.FieldSet;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.FileSystemResource;
@@ -29,6 +31,9 @@ import org.springframework.validation.BindException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 @Configuration
 @EnableBatchProcessing
@@ -41,6 +46,9 @@ public class BatchConfig {
     // If you are using Spring Boot, it will automatically configure the EntityManagerFactory based on
     // your application properties and JPA configuration.
     private final EntityManagerFactory emf;
+
+    @Autowired
+    private final TransactionRepository transactionRepository;
 
     @Bean
     public FlatFileItemReader<Transaction> transactionItemReader() {
@@ -81,14 +89,30 @@ public class BatchConfig {
     }
 
     @Bean
-    public ItemProcessor<Transaction, Transaction> transactionProcessor(){
+    public ItemProcessor<Transaction, Transaction> transactionProcessor() {
+        // Use a Set to track unique keys within this batch run
+        Set<String> seen = Collections.synchronizedSet(new HashSet<>());
         return item -> {
-            //Example validation: ensure amount is positive
-            if(item.getTrxnAmount().signum() < 0){
+            String uniqueKey = item.getAccountNumber() + "|" +
+                    item.getTrxnAmount() + "|" +
+                    item.getDescription() + "|" +
+                    item.getTrxnTimestamp() + "|" +
+                    item.getCustomerId();
+            // In-memory deduplication for this batch run
+            if (!seen.add(uniqueKey)) {
+                return null; // skip duplicate in file
+            }
+            // DB existence check
+            boolean exists = transactionRepository.existsByAccountNumberAndTrxnAmountAndDescriptionAndTrxnTimestampAndCustomerId(
+                    item.getAccountNumber(), item.getTrxnAmount(), item.getDescription(), item.getTrxnTimestamp(), item.getCustomerId()
+            );
+            if (exists) {
+                return null; // skip if already in DB
+            }
+            item.setProcessed(true);
+            if (item.getTrxnAmount().signum() < 0) {
                 throw new IllegalArgumentException("Transaction amount must be positive: " + item.getTrxnAmount());
             }
-            // Here you can add any processing logic if needed
-            // For now, we will just return the item as is
             return item;
         };
     }

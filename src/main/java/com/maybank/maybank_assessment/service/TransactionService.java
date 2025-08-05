@@ -35,12 +35,7 @@ public class TransactionService {
                 .orElseThrow(() -> new EntityNotFoundException("Transaction not found with id " + id));
         txn.setDescription(newDescription);
         // Save will trigger optimistic lock check via @Version
-        try {
-            Transaction updated = transactionRepository.save(txn);
-            return TransactionDto.fromEntity(updated);
-        } catch (ObjectOptimisticLockingFailureException e) {
-            // This exception indicates a version conflict (concurrent update)
-            throw e; // let it propagate to be handled by global exception handler as 409
-        }
+        Transaction updated = transactionRepository.save(txn);
+        return TransactionDto.fromEntity(updated);
     }
 }

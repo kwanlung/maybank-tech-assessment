@@ -30,4 +30,6 @@ public class Transaction {
 
     @Version
     private Integer version;
+
+    private boolean isProcessed = false;
 }
