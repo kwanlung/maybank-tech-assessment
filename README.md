@@ -36,9 +36,8 @@ This application implements:
 Run the following Docker command to start MySQL:
 
 ```bash
-docker run --name maybank-mysql -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=maybankdb -e MYSQL_USER=maybank -e MYSQL_PASSWORD=maybank123 -d mysql:8
+docker run --name maybank-mysql -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=maybankdb -e MYSQL_USER=maybank -e MYSQL_PASSWORD=maybank123 -d mysql:8 -v mysql_data:/var/lib/mysql
 ```
--v mysql_data:/var/lib/mysql
 
 To access the MySQL command line:
 
@@ -70,11 +69,11 @@ java -jar target/maybank-assessment-0.0.1-SNAPSHOT.jar
 
 1. **Repository Pattern**
    - Abstracts the data layer, providing a collection-like interface for domain objects
-   - Classes: `TransactionRepository`, `ProcessedFileRepository`
+   - Classes: `TransactionRepository`
 
 2. **Builder Pattern**
    - Used via Lombok annotations (`@Builder`) for creating complex objects
-   - Applied to DTOs and entities
+   - Applied to DTOs and entities like `Transaction` and `TransactionDto`
 
 3. **DTO (Data Transfer Object) Pattern**
    - Separates the API contract from internal domain models
@@ -82,7 +81,7 @@ java -jar target/maybank-assessment-0.0.1-SNAPSHOT.jar
 
 4. **Specification Pattern**
    - Enables dynamic query construction based on filters
-   - Class: `TransactionSpecifications`
+   - Class: `TransactionSpecifications` with methods for composing query criteria
 
 5. **Strategy Pattern**
    - Used in batch processing for different phases (read, process, write)
@@ -93,7 +92,7 @@ java -jar target/maybank-assessment-0.0.1-SNAPSHOT.jar
 
 7. **Optimistic Locking**
    - Handles concurrent updates to prevent data inconsistencies
-   - Implemented via JPA's `@Version` annotation
+   - Implemented via JPA's `@Version` annotation on Transaction entity
 
 ## Class Diagram
 
@@ -107,15 +106,7 @@ classDiagram
         -LocalDateTime trxnTimestamp
         -Long customerId
         -Integer version
-    }
-    
-    class ProcessedFile {
-        -Long id
-        -String filePath
-        -String checksum
-        -LocalDateTime processedAt
-        -String status
-        -Integer recordsProcessed
+        -boolean isProcessed
     }
     
     class ApiError {
@@ -154,22 +145,15 @@ classDiagram
     
     class TransactionRepository {
         <<interface>>
-    }
-    
-    class ProcessedFileRepository {
-        <<interface>>
-        +findByFilePath(String) Optional~ProcessedFile~
-        +existsByFilePath(String) boolean
+        +existsByAccountNumberAndTrxnAmountAndDescriptionAndTrxnTimestampAndCustomerId(...) boolean
     }
     
     class BatchConfig {
         -EntityManagerFactory emf
-        -ProcessedFileRepository processedFileRepository
+        -TransactionRepository transactionRepository
         +transactionItemReader() FlatFileItemReader
         +transactionProcessor() ItemProcessor
         +transactionItemWriter() JpaItemWriter
-        +fileProcessingCheckTasklet() Tasklet
-        +updateFileStatusTasklet() Tasklet
         +importTransactionJob() Job
     }
     
@@ -177,7 +161,6 @@ classDiagram
         -JobLauncher jobLauncher
         -Job importTransactionJob
         +runBatchJob() CommandLineRunner
-        -shouldRunJob() boolean
     }
     
     class TransactionSpecifications {
@@ -186,6 +169,10 @@ classDiagram
         +hasAccountNumber(Long) Specification
         +descriptionContains(String) Specification
         +withFilters(Long, Long, String) Specification
+        +timestampBetween(LocalDateTime, LocalDateTime) Specification
+        +amountGte(BigDecimal) Specification
+        +amountLte(BigDecimal) Specification
+        +withExtendedFilters(...) Specification
     }
     
     class GlobalExceptionHandler {
@@ -195,17 +182,23 @@ classDiagram
         +handleGeneralError(Exception) ApiError
     }
     
+    class TransactionSkipListener {
+        +onSkipInRead(Throwable) void
+        +onSkipInProcess(Transaction, Throwable) void
+        +onSkipInWrite(Transaction, Throwable) void
+    }
+    
     TransactionController --> TransactionService
     TransactionService --> TransactionRepository
     TransactionService --> TransactionDto
     TransactionRepository --> Transaction
-    BatchConfig --> ProcessedFileRepository
+    BatchConfig --> TransactionRepository
     BatchConfig --> Transaction
     BatchJobRunner --> BatchConfig
     TransactionController ..> UpdateTransactionRequest
     TransactionController ..> TransactionDto
     TransactionService ..> TransactionSpecifications
-    ProcessedFileRepository --> ProcessedFile
+    BatchConfig ..> TransactionSkipListener
     GlobalExceptionHandler ..> ApiError
 ```
 
@@ -215,20 +208,21 @@ classDiagram
 
 ```mermaid
 flowchart TD
-    A[Start Application] --> B{Check if file exists}
-    B -->|No| Z[End Process]
-    B -->|Yes| C{File already processed?}
-    C -->|Yes, unchanged| Z
-    C -->|No or changed| D[Read transactions from file]
-    D --> E[Process each transaction]
-    E --> F{Valid transaction?}
-    F -->|Yes| G[Save to database]
-    F -->|No| H[Log error and skip]
-    H --> E
-    G --> I{More transactions?}
-    I -->|Yes| E
-    I -->|No| J[Update file status]
-    J --> Z
+    A[Start Application] --> B[Read transactions from file]
+    B --> C[For each transaction]
+    C --> D{Duplicate in batch?}
+    D -->|Yes| E[Skip]
+    D -->|No| F{Already in DB?}
+    F -->|Yes| E
+    F -->|No| G{Valid transaction?}
+    G -->|No| H[Log error and skip]
+    G -->|Yes| I[Mark as processed]
+    I --> J[Save to database]
+    J --> K{More transactions?}
+    K -->|Yes| C
+    K -->|No| L[Job complete]
+    E --> K
+    H --> K
 ```
 
 ### Transaction Retrieval API Flow
@@ -339,13 +333,14 @@ The application provides detailed error responses through the `GlobalExceptionHa
 - 409 Conflict: Concurrent update conflicts
 - 500 Internal Server Error: Unexpected errors
 
-## Testing
+## Batch Processing Features
 
-Run the unit tests with:
-
-```bash
-mvn test
-```
+The batch job:
+1. Uses a pipe-delimited file format for transaction data
+2. Performs both in-memory and database-level deduplication
+3. Validates transaction data (e.g., positive amount validation)
+4. Uses a skip listener to log errors without failing the entire batch
+5. Processes transactions in configurable chunk sizes (currently 50)
 
 ## Future Enhancements
 
