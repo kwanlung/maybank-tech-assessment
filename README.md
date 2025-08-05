@@ -349,3 +349,13 @@ The batch job:
 3. Add transaction statistics endpoints
 4. Support for multiple file formats in batch processing
 5. Add actuator endpoints for monitoring
+
+Without Thread
+```log
+2025-08-05T19:43:20.146+08:00  INFO 25308 --- [ batch-thread-1] o.s.batch.core.step.AbstractStep         : Step: [importStep] executed in 441ms
+```
+
+With Thread
+```log
+2025-08-05T19:45:21.346+08:00  INFO 45624 --- [ batch-thread-1] o.s.batch.core.step.AbstractStep         : Step: [importStep] executed in 370ms
+```

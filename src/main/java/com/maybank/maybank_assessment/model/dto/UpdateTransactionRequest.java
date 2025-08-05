@@ -15,5 +15,4 @@ public class UpdateTransactionRequest {
     @NotBlank(message="Description is required")
     @Size(max = 255, message="Description too long")
     private String description;
-    // getter/setter
 }

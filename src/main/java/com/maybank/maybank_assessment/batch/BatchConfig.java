@@ -25,6 +25,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.validation.BindException;
 
@@ -39,17 +41,14 @@ import java.util.Set;
 @EnableBatchProcessing
 @RequiredArgsConstructor
 public class BatchConfig {
-    // For simplicity, we are using a single EntityManagerFactory for the batch job.
-    // In a more complex application, you might want to configure multiple data sources or transaction managers
-    // for different batch jobs.
-    // This configuration assumes that the EntityManagerFactory is already defined in your application context.
-    // If you are using Spring Boot, it will automatically configure the EntityManagerFactory based on
-    // your application properties and JPA configuration.
+
+    // JPA factory for managing database entities and transactions.
     private final EntityManagerFactory emf;
 
     @Autowired
     private final TransactionRepository transactionRepository;
 
+    // Reads records line-by-line from a flat file (e.g., CSV, TXT).
     @Bean
     public FlatFileItemReader<Transaction> transactionItemReader() {
         return new FlatFileItemReaderBuilder<Transaction>()
@@ -60,8 +59,11 @@ public class BatchConfig {
                 .build();
     }
 
+    // Maps each line of the file to a Transaction object.
     private LineMapper<Transaction> transactionLineMapper() {
+        // DefaultLineMapper provides a convenient way to map lines to objects
         DefaultLineMapper<Transaction> lineMapper = new DefaultLineMapper<>();
+        // Splits a line into fields using a delimiter (e.g., |).
         DelimitedLineTokenizer tokenizer = new DelimitedLineTokenizer("|");
         tokenizer.setNames("ACCOUNT_NUMBER","TRX_AMOUNT","DESCRIPTION","TRX_DATE","TRX_TIME","CUSTOMER_ID");
         tokenizer.setStrict(true); // expect all fields present
@@ -70,7 +72,7 @@ public class BatchConfig {
         return lineMapper;
     }
 
-    // FieldSetMapper to convert each line's fields into a Transaction object
+    // FieldSetMapper converts tokenized fields into a Transaction object.
     public static class TransactionFieldSetMapper implements FieldSetMapper<Transaction>{
 
         @Override
@@ -88,6 +90,7 @@ public class BatchConfig {
         }
     }
 
+    // Processes and validates each Transaction (deduplication, validation).
     @Bean
     public ItemProcessor<Transaction, Transaction> transactionProcessor() {
         // Use a Set to track unique keys within this batch run
@@ -117,6 +120,8 @@ public class BatchConfig {
         };
     }
 
+    // Writes valid Transaction objects to the database using JPA.
+    // This uses the EntityManagerFactory to persist entities.
     @Bean
     public JpaItemWriter<Transaction> transactionItemWriter(){
         JpaItemWriter<Transaction> writer = new JpaItemWriter<>();
@@ -126,10 +131,19 @@ public class BatchConfig {
         return writer;
     }
 
+    // JobRepository is used to manage job execution metadata.
     @Bean
     public Job importTransactionJob(JobRepository jobRepository, Step importStep){
         return new JobBuilder("importTransactionsJob", jobRepository)
                 .flow(importStep).end().build();
+    }
+
+    // TaskExecutor allows parallel processing of chunks in the step and enables multi-threaded step execution.
+    @Bean
+    public TaskExecutor taskExecutor() {
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor("batch-thread-");
+        executor.setConcurrencyLimit(4); // Set max concurrent threads
+        return executor;
     }
 
     @Bean
@@ -138,7 +152,8 @@ public class BatchConfig {
                            FlatFileItemReader<Transaction> reader,
                            ItemProcessor<Transaction, Transaction> processor,
                            JpaItemWriter<Transaction> writer,
-                           TransactionSkipListener skipListener) {
+                           TransactionSkipListener skipListener,
+                           TaskExecutor taskExecutor) {
         return new StepBuilder("importStep", jobRepository)
                 .<Transaction, Transaction>chunk(50, txnManager) // chunk size 50
                 .reader(reader)
@@ -149,6 +164,7 @@ public class BatchConfig {
                 .skip(FlatFileParseException.class)    // skip format errors (e.g. missing fields)
                 .skip(IllegalArgumentException.class)  // skip our validation exceptions
                 .listener(skipListener)                // attach skip listener for logging
+                .taskExecutor(taskExecutor) // Enable multi-threading
                 .build();
     }
 }

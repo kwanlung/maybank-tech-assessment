@@ -3,7 +3,6 @@ spring:
     url: jdbc:mysql://localhost:3307/maybankdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=UTF-8
     username: maybank
     password: maybank123
-    # driver-class-name is optional in Boot 3 (autodetected), but you can pin it:
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:
